@@ -5,22 +5,26 @@ description: >
   Designed to run in the claude-work (Claude Enterprise) environment. Takes the exec's name
   as the primary key, autonomously discovers their org (RDs → AEs → accounts) from Salesforce,
   prioritizes accounts with upcoming customer meetings, open support cases, and recent activity,
-  then runs six parallel intelligence streams — M365 calendar + email (claude.ai Enterprise
-  connector), Slack (claude.ai Enterprise connector), Salesforce (opportunities + support
-  tickets + notes), PowerBI consumption, and LinkedIn + public news — and synthesizes one
-  executive brief: BLUF summary, per-meeting prep cards, DT usage/POC status, verified
-  struggles, consumption health, pipeline/expansion, public intelligence, and a numbered
-  action list. Outputs text (default), branded HTML, or PDF. Every finding is fact-backed
-  from a cited source; nothing is fabricated.
-argument-hint: '"<exec-name>" [period] [--html|--text|--pdf] [optional context text]'
+  then runs up to seven parallel intelligence streams — M365 calendar + email (claude.ai
+  Enterprise connector), Slack (claude.ai Enterprise connector), Salesforce (opportunities +
+  support tickets + notes), PowerBI consumption, LinkedIn + public news, and optionally Gong
+  call intelligence (SA-7: recent call snippets, customer pain points verbatim, open
+  commitments, per-meeting last-call cards) — and synthesizes one executive brief: BLUF
+  summary, per-meeting prep cards with Gong last-call context, DT usage/POC status, verified
+  struggles, Gong call intelligence section, consumption health, pipeline/expansion, public
+  intelligence, and a numbered action list. Gong MCP is auto-installed if not present.
+  Use --broad to include AE calls for upcoming-meeting accounts. Outputs text (default),
+  branded HTML, or PDF. Every finding is fact-backed from a cited source; nothing is fabricated.
+argument-hint: '"<exec-name>" [period] [--html|--text|--pdf] [--broad] [optional context text]'
 when_to_use: >
   When a Dynatrace Executive Leader needs a full-footprint briefing ahead of customer meetings,
   a board or leadership cycle, or a QBR sweep: which customers they are meeting, what those
   customers are doing with Dynatrace, where they are struggling, how consumption looks, what
-  pipeline exists, and what is happening publicly around DT and those companies. Requires the
-  exec's name. Run under the claude-work alias (Claude Enterprise). Triggered by: /exec-brief,
-  "brief me for my meetings", "exec briefing for <name>", "prep <name> for the next 2 weeks",
-  "leader brief".
+  pipeline exists, what is happening publicly around DT and those companies, and what was
+  discussed on recent Gong calls with those accounts. Requires the exec's name. Run under the
+  claude-work alias (Claude Enterprise). Triggered by: /exec-brief, "brief me for my meetings",
+  "exec briefing for <name>", "prep <name> for the next 2 weeks", "leader brief",
+  "what are my meetings this week", "prep me for my customer calls".
 ---
 
 # /exec-brief — Executive Meeting Intelligence Briefing
@@ -108,15 +112,29 @@ Note: `m365-copilot` MCP (`mcp__m365-copilot__*`) is **not registered in claude-
 do not reference or attempt to use it. The M365 Enterprise connector above is the correct
 integration for email and calendar data.
 
-**Gong is an optional integration.** Probe `mcp__gong__token_status()` in parallel with other
-optional checks. If the MCP is missing or unauthenticated after one `browser_login` attempt:
-- Set `GONG_AVAILABLE=false` — SA-7 is silently skipped; brief continues without call intelligence.
-- Print install pointer (once, non-blocking):
-  ```
-  Gong not connected — SA-7 call intelligence will be omitted.
-  To add: clone https://github.com/clabrado/se-mcp-servers (public) and say "set up gong-mcp".
-  ```
-If Gong is ready: set `GONG_AVAILABLE=true`. SA-7 runs in Phase 2.
+**Gong is an optional integration.** First check if it's already installed: run `claude mcp list`
+and probe `mcp__gong__token_status()` in parallel with other optional checks.
+
+**Case A — Gong MCP not registered (missing from `claude mcp list`):**
+Install it automatically — only when it is truly absent:
+```
+1. git clone https://github.com/clabrado/se-mcp-servers ~/Projects/se-mcp-servers
+   (or git -C ~/Projects/se-mcp-servers pull if already cloned)
+2. Read ~/Projects/se-mcp-servers/gong-mcp/README.md for the exact registration JSON
+3. Register: claude mcp add-json --scope user gong '<json from README>'
+4. Call mcp__gong__browser_login to authenticate
+5. Verify with mcp__gong__token_status()
+```
+Tell the user: "Gong MCP was not installed — I've set it up automatically and logged you in."
+If the clone or registration fails, set `GONG_AVAILABLE=false`, note the error, and continue.
+
+**Case B — Gong MCP registered but unauthenticated:**
+Call `mcp__gong__browser_login()` once. Poll `mcp__gong__token_status()` every 30s up to 2
+minutes. If auth completes → READY. If it times out → `GONG_AVAILABLE=false`, note in Data Notes.
+
+**Case C — Gong ready:** set `GONG_AVAILABLE=true`. SA-7 runs in Phase 2.
+
+Brief always continues regardless of Gong outcome — it is never a blocker.
 
 ### Pre-flight procedure
 
@@ -1131,7 +1149,8 @@ DOM/static checks alone never earn "verified."
 | Required MCP unauthenticated, OAuth incomplete | STOP in Phase -1 with "authentication incomplete" |
 | LinkedIn MCP absent | Set `LINKEDIN_MODE=webfetch`; SA-6 uses WebSearch + WebFetch on public pages; `linkedinAvailable:false` |
 | LinkedIn MCP present but auth fails | Same webfetch fallback after one `browser_login` attempt |
-| Gong MCP absent or unauthenticated | Set `GONG_AVAILABLE=false`; print install pointer (once); skip SA-7; render muted `#gong-intelligence` placeholder; brief continues |
+| Gong MCP absent | Auto-install from `clabrado/se-mcp-servers` (clone + register + `browser_login`); if install fails, set `GONG_AVAILABLE=false`, skip SA-7, render muted placeholder |
+| Gong MCP unauthenticated | Call `browser_login` once, poll 30s×4; on timeout set `GONG_AVAILABLE=false`, skip SA-7, note in Data Notes |
 | Exec not found in SF | Show what was searched (incl. nickname expansions); ask for full name or email |
 | Multiple exec matches in SF | Present candidates (Name · Title · Role · Email); ask. Only permitted up-front question |
 | Roster empty after both strategies | STOP; report Strategy-1 and Strategy-2 results verbatim; ask |
